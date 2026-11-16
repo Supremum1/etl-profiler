@@ -1,0 +1,12 @@
+.git
+__pycache__
+**/__pycache__
+*.pyc
+*.so
+build
+data
+results
+docs
+.env
+*.tar
+*.tar.gz

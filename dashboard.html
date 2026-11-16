@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ETL benchmark · med_technic</title>
+<style>
+:root{color-scheme:dark;--bg:#0a121b;--panel:#111e2b;--line:#263b4c;--fg:#e9f1f7;--muted:#a4b7c8;--py:#ffbe72;--pg:#7cbcff;--ch:#63dec1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 "Segoe UI",sans-serif}
+main{max-width:1440px;margin:auto;padding:28px 32px 48px}h1{font-size:clamp(30px,4vw,48px);line-height:1.1;margin:0 0 8px}h2{font-size:20px;margin:0}h3{font-size:15px;margin:0}p{margin:6px 0;color:var(--muted)}
+header{padding:14px 0 22px;border-bottom:1px solid var(--line)}section,details{margin:20px 0;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.head,.controls,.legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.head{justify-content:space-between;margin-bottom:10px}.controls{margin:10px 0 16px}.controls label{display:grid;gap:4px;color:var(--muted);font-size:13px}
+select,button,input{font:inherit}select,button{background:#172a3b;color:var(--fg);border:1px solid #385065;border-radius:6px;padding:6px 9px;max-width:100%}button{cursor:pointer}button[aria-pressed=true]{background:#214762;border-color:var(--pg)}
+#highlights{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}.metric{padding:12px;background:#0c1722;border-radius:8px}.metric strong{display:block;font-size:22px}.metric span{color:var(--muted);overflow-wrap:anywhere}
+.scroll{overflow:auto}.matrix-scroll{max-height:440px}.matrix-scroll thead{position:sticky;top:0;background:var(--panel);z-index:1}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;white-space:nowrap}td,th{text-align:right;padding:7px 9px;border-bottom:1px solid var(--line)}td:first-child,th:first-child{text-align:left}th{font-size:12px;color:var(--muted)}th button{background:none;border:0;padding:0;color:inherit;text-align:inherit}tr.selected td{background:#1a3449}.pick{background:none;border:0;padding:0;text-align:left;color:#9ed2ff}.frontier{color:var(--ch);font-size:12px;margin-left:8px}.pick:hover,summary:hover{text-decoration:underline}
+summary{cursor:pointer}.trace{display:grid;gap:8px}canvas{display:block;width:100%;height:122px;touch-action:pan-y}.timeline{border-top:1px solid var(--line);padding-top:8px}.timeline canvas{height:112px}.legend{font-size:13px;color:var(--muted);margin:8px 0}.dot{display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:2px}.hint{font-size:13px}
+#cursor-readout{min-height:49px;background:#0c1722;padding:8px 12px;border-radius:7px;color:var(--muted);overflow-wrap:anywhere}.interval{display:flex;flex-wrap:wrap;gap:12px;align-items:center}.interval input{width:100px;background:#0c1722;border:1px solid #385065;color:var(--fg);padding:4px 6px;border-radius:5px}#phase-scroll{max-height:265px;overflow:auto}.failure{color:#ffb9a0}
+@media(max-width:760px){main{padding:16px}section,details{padding:12px}#highlights{grid-template-columns:1fr}.controls label{max-width:100%}}
+</style>
+</head>
+<body><main>
+<header><h1>PostgreSQL → ClickHouse</h1><p id="metadata"></p></header>
+<section>
+  <div class="head"><h2>Сравнение конфигураций</h2><span id="coverage"></span></div>
+  <div id="highlights"></div>
+  <div class="controls">
+    <label>Режим<select id="mode"><option value="">Все режимы</option></select></label>
+    <label>Чтение<select id="reader"><option value="">Все способы</option></select></label>
+    <label>Batch / fetch<select id="sizes"><option value="">Все размеры</option></select></label>
+    <label>Ресурс в таблице<select id="resource"><option value="all">Все три компонента</option><option value="python">Python</option><option value="postgres">PostgreSQL</option><option value="clickhouse">ClickHouse</option></select></label>
+  </div>
+  <div class="scroll matrix-scroll"><table><thead><tr id="columns"></tr></thead><tbody id="comparison"></tbody></table></div>
+  <details id="size-panel"><summary>Влияние batch и fetch на выбранную реализацию</summary>
+    <p id="size-title"></p><div class="scroll"><table><thead><tr><th>Изменение</th><th>Строк/с</th><th>Python CPU / 1 млн</th><th>PostgreSQL CPU / 1 млн</th><th>ClickHouse CPU / 1 млн</th><th>Python пик RAM</th><th>PostgreSQL пик RAM</th><th>ClickHouse пик RAM</th></tr></thead><tbody id="size-comparison"></tbody></table></div>
+  </details>
+  <p class="hint">Сортируйте по заголовкам. Нажмите конфигурацию, чтобы открыть её трассу. Для повторов показаны медианы. Точки «Парето» дают компромисс для выбранного ресурса: среди видимых конфигураций нет одновременно более быстрой и менее затратной по CPU.</p>
+</section>
+<section id="trace">
+  <div class="head"><h2>Операции и ресурсы по времени</h2></div>
+  <div class="controls"><label>Прогон<select id="run"></select></label></div>
+  <div class="interval">
+    <label>От <input id="left" type="number" min="0" step="0.01" aria-label="Начало окна, секунды"> с</label>
+    <label>До <input id="right" type="number" min="0" step="0.01" aria-label="Конец окна, секунды"> с</label>
+    <button id="reset">Весь прогон</button>
+  </div>
+  <p class="hint">Общий курсор синхронизирует графики. Выделите мышью интервал на любом графике для увеличения.</p>
+  <div class="legend" id="component-legend"></div>
+  <div id="cursor-readout" aria-live="off"></div>
+  <div class="trace" id="plots"></div>
+  <p class="failure" id="errors"></p>
+  <details open><summary>Ресурсы в выбранном интервале</summary><div class="scroll"><table><thead><tr><th>Компонент</th><th>CPU, с</th><th>CPU, с / 1 млн</th><th>Пик памяти, МиБ</th><th>Диск R / W, МиБ</th><th>Сеть RX / TX, МиБ</th><th>Throttling, с</th><th>Пик PID</th></tr></thead><tbody id="run-resources"></tbody></table></div></details>
+  <details><summary>Сводка длительностей операций</summary><div class="scroll" id="phase-scroll"><table><thead><tr><th>Операция</th><th>Вызовов</th><th>Сумма, с</th><th>p95, мс</th></tr></thead><tbody id="phase-summary"></tbody></table></div></details>
+</section>
+<details>
+  <summary>Методика измерения</summary>
+  <p id="resource-method">CPU — число занятых ядер по изменению счётчика Docker за интервал. Память — Docker working set (usage минус inactive file cache). I/O — байты cgroup block I/O, сеть — счётчики интерфейсов контейнера. В общем столбце памяти суммируются пики компонентов, которые могут происходить в разные моменты. Для метрик без данных показано «—».</p>
+  <p>Трасса показывает длительность вызовов, включая ожидание. «Чтение» включает получение и декодирование строк, «INSERT» — сериализацию драйвером, передачу и ожидание ClickHouse. В async и hybrid подготовка колонок и ожидание очереди видны отдельно. В параллельном режиме строки дорожек соответствуют PID. Периодический сбор может пропускать короткие пики.</p>
+  <p>Границы CPU, I/O и сети оцениваются интерполяцией между соседними пробами. Профиль включает накладные расходы наблюдения и фоновую работу контейнеров внутри замера. Подготовка источника, создание и проверка целевой таблицы, удаление таблицы и ресурсы после завершения вставки исключены. PostgreSQL публикует часть счётчиков с задержкой. Чтение вне shared buffers может идти из кеша ОС.</p>
+  <p id="matrix-method">Чтение stream, cursor, keyset и COPY binary сравнивается с разными batch/fetch. Для COPY CSV → HTTP и server-side размеры передачи задаёт сам путь данных. Прогоны выполняются последовательно после прогрева, без принудительного сброса кешей.</p>
+</details>
+</main>
+<script id="data" type="application/json">__REPORT_DATA__</script>
+<script>
+const $ = id => document.getElementById(id);
+const {runs, environment, logs, planned_configurations} = JSON.parse($('data').textContent);
+const services = {python:['Python','#ffbe72'],postgres:['PostgreSQL','#7cbcff'],clickhouse:['ClickHouse','#63dec1']};
+const names = Object.keys(services);
+const stages = {
+  pg_fetch:['Чтение PostgreSQL','#7cbcff'], python_columns:['Подготовка колонок','#ffbe72'],
+  queue_put:['Очередь producer → writer','#ba9ff0'], ch_insert:['INSERT в ClickHouse','#63dec1'],
+  copy_relay:['COPY CSV → HTTP','#e29cfc'], insert_ack:['Ответ ClickHouse','#b0ed77'],
+  server_insert:['Серверный INSERT SELECT','#63dec1']
+};
+const mib = 1024 ** 2;
+const fmt = (n, digits=0) => Number.isFinite(n) ? n.toLocaleString('ru-RU',{maximumFractionDigits:digits}) : '—';
+const sum = v => v.every(Number.isFinite) ? v.reduce((a,b)=>a+b,0) : null;
+const med = v => {
+  const x=v.filter(Number.isFinite).sort((a,b)=>a-b), m=Math.floor(x.length/2);
+  return x.length ? (x[m]+x[Math.floor((x.length-1)/2)])/2 : null;
+};
+function option(select, value, text) { select.add(new Option(text,value)); }
+function cell(row, value) { row.insertCell().textContent=value; }
+function sizeKey(r) {
+  return r.fetch_size && r.reader!=='copy-direct' ? r.batch_size+'/'+r.fetch_size : 'na';
+}
+const modeName = r => r.pipeline==='server-side'&&r.workers>1?'parallel server-side':r.pipeline;
+function config(run) {
+  const r=run.result;
+  return [modeName(r), r.driver, r.workers ? r.workers+' workers' : '', r.reader,
+    r.fetch_size && r.reader!=='copy-direct' ? fmt(r.batch_size)+' / '+fmt(r.fetch_size) : ''].filter(Boolean).join(' · ');
+}
+const byConfig = new Map();
+runs.forEach(r => {
+  if(!byConfig.has(r.configuration)) byConfig.set(r.configuration,[]);
+  byConfig.get(r.configuration).push(r);
+});
+const groups=[...byConfig.values()];
+const native = environment.resource_backend === 'systemd';
+if(native) {
+  $('resource-method').textContent = 'CPU, память, диск и задачи учитываются по cgroup v2 каждого сервиса. Python включает дочерние процессы. Память — memory.current минус inactive_file. Диск — байты io.stat. Сеть — IPIngressBytes и IPEgressBytes systemd, включая loopback и пакеты мониторинга. Сумма RX и TX нескольких сервисов учитывает одну передачу на обеих сторонах. Пики памяти компонентов могут происходить в разные моменты.';
+}
+if(environment.fixed_sizes) {
+  $('size-panel').hidden = true;
+  $('matrix-method').textContent = 'Во всех режимах с управляемыми пачками batch '+fmt(environment.batch_size||50000)+' / fetch '+fmt(environment.fetch_size||50000)+'. COPY CSV → HTTP и server-side используют собственные размеры передачи. Прогоны идут последовательно после прогрева без принудительного сброса кешей.';
+}
+const environmentLabel = [environment.platform, environment.dataset, runs.length ? fmt(runs[0].result.rows)+' строк' : '',
+  environment.engine_cpus ? environment.engine_cpus+' vCPU · '+fmt(environment.engine_memory/1024**3,1)+' ГиБ' : '',
+  environment.sampling_seconds ? 'интервал '+fmt(environment.sampling_seconds,2)+' с' : '',
+  ...Object.values(environment.images || {})].filter(Boolean);
+$('metadata').textContent=environmentLabel.join(' · ');
+$('coverage').textContent=groups.length+(planned_configurations?' / '+planned_configurations:'')+' конфигураций · '+runs.length+' замеров'+(logs>runs.length?' · логов без профиля '+(logs-runs.length):'');
+for(const [id,values] of [['mode',runs.map(r=>modeName(r.result))],['reader',runs.map(r=>r.result.reader)]])
+  [...new Set(values.filter(Boolean))].sort().forEach(v=>option($(id),v,v));
+[...new Set(runs.map(r=>sizeKey(r.result)))].sort().forEach(v=>
+  option($('sizes'),v,v==='na'?'Размеры не применяются':v.split('/').map(n=>fmt(Number(n))).join(' / ')));
+runs.forEach((r,i)=>option($('run'),i,config(r)+' · повтор '+r.repeat));
+const columns=[
+  ['Конфигурация', null, 0], ['Повторов', (r,g)=>g.length, 0], ['Строк/с', r=>r.result.rows_per_second, 0],
+  ['Время, с', r=>r.result.seconds, 2], ['CPU, с', r=>resource(r,'cpu_s'), 2],
+  ['CPU, с / 1 млн', r=>divide(resource(r,'cpu_s'),r.result.rows/1e6), 2],
+  ['PostgreSQL CPU, с / 1 млн', r=>divide(r.summary.postgres.cpu_s,r.result.rows/1e6), 2],
+  ['ClickHouse CPU, с / 1 млн', r=>divide(r.summary.clickhouse.cpu_s,r.result.rows/1e6), 2],
+  ['Пик памяти, МиБ', r=>divide(resource(r,'memory'),mib), 1],
+  ['Диск R / W, МиБ', r=>divide(sum([resource(r,'read'),resource(r,'write')]),mib), 1],
+  ['Сеть RX / TX, МиБ', r=>divide(sum([resource(r,'rx'),resource(r,'tx')]),mib), 1],
+];
+function divide(n,d) {return Number.isFinite(n) && d ? n/d : null;}
+function resource(run,key) {
+  const s=$('resource').value;
+  return s==='all'?sum(names.map(name=>run.summary[name][key])):run.summary[s][key];
+}
+let order=2, ascending=false, chosen=0;
+function visibleGroups() {
+  return groups.filter(([r])=>(!$('mode').value||modeName(r.result)===$('mode').value)
+    && (!$('reader').value||r.result.reader===$('reader').value)
+    && (!$('sizes').value||sizeKey(r.result)===$('sizes').value));
+}
+function compare() {
+  const matches=visibleGroups();
+  const rows=matches.map(g=>({g, values:columns.map(([,get])=>get?med(g.map(r=>get(r,g))):null)}));
+  rows.sort((a,b)=>{
+    if(!order) return config(a.g[0]).localeCompare(config(b.g[0]))*(ascending?1:-1);
+    const x=a.values[order], y=b.values[order];
+    if(x===null) return y===null?0:1;
+    if(y===null) return -1;
+    return (x-y)*(ascending?1:-1);
+  });
+  $('columns').replaceChildren(...columns.map(([name],i)=>{
+    const th=document.createElement('th'), b=document.createElement('button');
+    th.setAttribute('aria-sort',i===order?(ascending?'ascending':'descending'):'none');
+    b.textContent=name+(order===i?(ascending?' ↑':' ↓'):'');
+    b.onclick=()=>{ascending=order===i?!ascending:i!==2;order=i;compare();};
+    th.append(b);return th;
+  }));
+  $('comparison').replaceChildren();
+  const measured=rows.filter(({values})=>Number.isFinite(values[5]));
+  for(const {g,values} of rows) {
+    const tr=$('comparison').insertRow();
+    const b=document.createElement('button');
+    b.className='pick';b.textContent=config(g[0]);b.onclick=()=>{selectRun(runs.indexOf(g[0]));$('trace').scrollIntoView();};
+    tr.classList.toggle('selected',g.includes(runs[chosen]));
+    const label=tr.insertCell();label.append(b);
+    if(Number.isFinite(values[5])&&!measured.some(({values:v})=>
+      v[2]>=values[2]&&v[5]<=values[5]&&(v[2]>values[2]||v[5]<values[5]))) {
+      const tag=document.createElement('span');tag.className='frontier';tag.textContent='Парето';label.append(tag);
+    }
+    values.slice(1).forEach((v,i)=>{
+      if(i===8||i===9) {
+        const keys=i===8?['read','write']:['rx','tx'];
+        cell(tr,keys.map(k=>fmt(divide(med(g.map(r=>resource(r,k))),mib),1)).join(' / '));
+      } else cell(tr,fmt(v,columns[i+1][2]));
+    });
+  }
+  const top=(idx, min=false)=>rows.filter(x=>Number.isFinite(x.values[idx]))
+    .sort((a,b)=>(a.values[idx]-b.values[idx])*(min?1:-1))[0];
+  $('highlights').replaceChildren(...[
+    ['Самый быстрый',2,false,' строк/с'], ['Минимум CPU PostgreSQL',6,true,' CPU-с / 1 млн'],
+    ['Минимум CPU ClickHouse',7,true,' CPU-с / 1 млн']
+  ].map(([label,index,min,unit])=>{
+    const row=top(index,min), el=document.createElement('div'), title=document.createElement('span'),
+      value=document.createElement('strong'), detail=document.createElement('span');
+    el.className='metric';title.textContent=label;value.textContent=row?fmt(row.values[index],2)+unit:'—';
+    detail.textContent=row?config(row.g[0]):'';el.append(title,value,detail);return el;
+  }));
+}
+for(const id of ['mode','reader','sizes','resource']) $(id).onchange=compare;
+
+function compareSizes(run) {
+  $('size-comparison').replaceChildren();
+  const {pipeline, driver, workers, reader}=run.result;
+  const matches=groups.filter(([{result:r}])=>r.pipeline===pipeline&&r.driver===driver&&r.workers===workers&&r.reader===reader);
+  $('size-title').textContent=[pipeline,driver,workers?workers+' workers':'',reader].filter(Boolean).join(' · ')
+    +(sizeKey(run.result)==='na'?' · размер передачи задаёт реализация':' · изменение относительно меньшего размера, %');
+  const get=(size,metric)=>med((matches.find(([r])=>sizeKey(r.result)===size)||[]).map(metric));
+  const metrics=[r=>r.result.rows_per_second,...names.map(n=>r=>divide(r.summary[n].cpu_s,r.result.rows/1e6)),
+    ...names.map(n=>r=>r.summary[n].memory)];
+  if(sizeKey(run.result)==='na')return;
+  for(const [label,a,b] of [
+    ['Fetch 10k → 50k при batch 10k','10000/10000','10000/50000'],
+    ['Batch 10k → 50k при fetch 50k','10000/50000','50000/50000'],
+  ]) {
+    const row=$('size-comparison').insertRow();
+    cell(row,label);
+    for(const metric of metrics) {
+      const base=get(a,metric), next=get(b,metric);
+      const value=base>0 && Number.isFinite(next)?(next/base-1)*100:null;
+      cell(row,Number.isFinite(value)?(value>0?'+':'')+fmt(value,1)+'%':'—');
+    }
+  }
+}
+
+const spec=[
+  ['CPU · занятые ядра','cpu_s',true,1],
+  ['Память · МиБ','memory',false,mib],
+  ['Диск · чтение, МиБ/с','read',true,mib],
+  ['Диск · запись, МиБ/с','write',true,mib],
+  ['Сеть · приём, МиБ/с','rx',true,mib],
+  ['Сеть · передача, МиБ/с','tx',true,mib],
+  ['PostgreSQL · активные backend и ClientWrite','waits',false,1,'pg_activity'],
+  ['PostgreSQL · чтение вне shared buffers, МиБ/с','buffer_read',true,mib,'pg_counters'],
+  ['PostgreSQL · накопленная запись temp, МиБ','temp',false,mib,'pg_temp'],
+  ['ClickHouse · активные запросы и merge','queries',false,1,'ch_activity'],
+  ['ClickHouse · память запросов и merge, МиБ','query_memory',false,mib,'ch_memory'],
+];
+function makePlot(title, className='') {
+  const el=document.createElement('div'), h=document.createElement('h3'), c=document.createElement('canvas');
+  el.className=className;h.textContent=title;c.setAttribute('aria-label',title);c.setAttribute('role','img');
+  el.append(h,c);$('plots').append(el);return c;
+}
+const timeline=makePlot('Операции по процессам','timeline');
+const plots=spec.map(s=>makePlot(s[0]));
+let left=0,right=1,cursor=null,drag=null,chartData=[],pids=[];
+const lines=[timeline,...plots];
+function rate(before, after, key, divisor) {
+  const [t,a]=before,[end,b]=after;
+  return Number.isFinite(a[key])&&Number.isFinite(b[key])&&b[key]>=a[key]&&end>t
+    ? (b[key]-a[key])/(end-t)/divisor : null;
+}
+function series(run, [,key,delta,divisor,source]) {
+  if(source==='pg_activity') return [
+    ['Активные','#7cbcff',run.samples[source].map(([t,v])=>[t,Object.values(v.waits).reduce((a,b)=>a+b,0)])],
+    ['ClientWrite','#ba9ff0',run.samples[source].map(([t,v])=>[t,v.waits.ClientWrite||0])],
+  ];
+  if(source==='pg_counters') {
+    const points=run.samples.pg_activity;
+    return [['Блоки','#7cbcff',points.slice(1).map((after,i)=>[
+      (points[i][0]+after[0])/2,rate(points[i],after,key,divisor)
+    ])]];
+  }
+  if(source==='pg_temp') {
+    const points=run.samples.pg_activity, base=points[0]?.[1].temp;
+    return [['Temp','#7cbcff',points.map(([t,v])=>[t,divide(v.temp-base,mib)])]];
+  }
+  if(source==='ch_memory') return [
+    ['Запросы','#63dec1',run.samples.ch_activity.map(([t,v])=>[t,divide(v.query_memory,mib)])],
+    ['Merge','#ffbe72',run.samples.ch_activity.map(([t,v])=>[t,divide(v.merge_memory,mib)])],
+  ];
+  if(source==='ch_activity') return [
+    ['Запросы','#63dec1',run.samples[source].map(([t,v])=>[t,v.queries])],
+    ['Merge','#ffbe72',run.samples[source].map(([t,v])=>[t,v.merges])],
+  ];
+  return names.map(name=>{
+    const samples=run.samples[name];
+    return [...services[name],samples.map(([t,v],i)=>delta
+      ? [i?(t+samples[i-1][0])/2:t,i?rate(samples[i-1],samples[i],key,divisor):null]
+      : [t,divide(v[key],divisor)])];
+  });
+}
+function legend(entries) {
+  return entries.map(([label,color])=>{
+    const span=document.createElement('span'), dot=document.createElement('i');
+    dot.className='dot';dot.style.background=color;span.append(dot,label);return span;
+  });
+}
+$('component-legend').append(...legend(Object.values(services)));
+const labelLine = (c, text, x, y, color='#a4b7c8')=>{c.fillStyle=color;c.fillText(text,x,y);};
+function frame(canvas) {
+  const width=canvas.clientWidth, height=canvas.clientHeight, ratio=devicePixelRatio||1;
+  if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(height*ratio)) {
+    canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
+  }
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height);
+  ctx.font='12px Segoe UI';ctx.textBaseline='middle';
+  const a=70,b=Math.max(a+1,width-16),top=10,bottom=height-25;
+  const x=t=>a+(t-left)/(right-left)*(b-a);
+  ctx.strokeStyle='#263b4c';
+  for(let i=0;i<=4;i++) {
+    const t=left+(right-left)*i/4, px=x(t);
+    ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();
+    labelLine(ctx,fmt(t,2)+' с',px-(i===4?26:4),height-11);
+  }
+  return {ctx,a,b,top,bottom,x};
+}
+function overlay({ctx,x,top,bottom}) {
+  if(cursor!==null) {
+    ctx.strokeStyle='#e9f1f7';ctx.beginPath();ctx.moveTo(x(cursor),top);ctx.lineTo(x(cursor),bottom);ctx.stroke();
+  }
+  if(drag!==null&&cursor!==null) {
+    ctx.fillStyle='#7cbcff35';ctx.fillRect(Math.min(x(cursor),x(drag)),top,Math.abs(x(cursor)-x(drag)),bottom-top);
+  }
+}
+function drawTimeline() {
+  const f=frame(timeline),{ctx,a,b,top,bottom,x}=f, run=runs[chosen];
+  const lane=(bottom-top)/Math.max(1,pids.length);
+  const laneLabel = run.result.pipeline==='server-side' && run.result.workers>1 ? 'TID ' : 'PID ';
+  pids.forEach((pid,i)=>labelLine(ctx,laneLabel+pid,3,top+lane*(i+.5)));
+  ctx.save();ctx.beginPath();ctx.rect(a,top,b-a,bottom-top);ctx.clip();
+  for(const [stage,pid,start,end] of run.stages) {
+    if(end<left||start>right) continue;
+    const i=pids.indexOf(pid), offset=stage==='queue_put'?0:stage==='pg_fetch'?0.18:0.54;
+    ctx.fillStyle=stages[stage]?.[1]||'#a4b7c8';
+    ctx.fillRect(x(start),top+lane*(i+offset),Math.max(1,x(end)-x(start)),Math.max(2,lane*(stage==='queue_put'?.15:.40)));
+  }
+  ctx.restore();overlay(f);
+}
+function drawPlot(canvas,series) {
+  const f=frame(canvas),{ctx,a,b,top,bottom,x}=f;
+  let max=0;
+  for(const [,,points] of series) points.forEach(([t,v],i)=>{
+    if(Number.isFinite(v) && (points[i-1]?.[0]??t)<=right && (points[i+1]?.[0]??t)>=left)
+      max=Math.max(max,v);
+  });
+  max=(max||1)*1.12;
+  const y=v=>bottom-v/max*(bottom-top);
+  for(const value of [0,max/2,max]) {
+    ctx.strokeStyle='#263b4c';ctx.beginPath();ctx.moveTo(a,y(value));ctx.lineTo(b,y(value));ctx.stroke();
+    labelLine(ctx,fmt(value,value<10?2:0),3,y(value));
+  }
+  ctx.save();ctx.beginPath();ctx.rect(a,top,b-a,bottom-top);ctx.clip();
+  for(const [name,color,points] of series) {
+    let previous=false,lastX=null;
+    ctx.beginPath();ctx.strokeStyle=color;ctx.lineWidth=1.7;
+    for(const [t,v] of points) {
+      if(!Number.isFinite(v)){previous=false;continue;}
+      if(previous)ctx.lineTo(x(t),y(v));else ctx.moveTo(x(t),y(v));
+      previous=true;lastX=t;
+    }
+    ctx.stroke();ctx.lineWidth=1;
+    if(lastX!==null && points.filter(([,v])=>Number.isFinite(v)).length===1) {
+      const [t,v]=points.find(([,v])=>Number.isFinite(v));ctx.fillStyle=color;ctx.fillRect(x(t)-2,y(v)-2,4,4);
+    }
+  }
+  ctx.restore();overlay(f);
+}
+function nearest(points,t) {
+  return points.reduce((a,b)=>!a||Math.abs(b[0]-t)<Math.abs(a[0]-t)?b:a,null);
+}
+function readout() {
+  const run=runs[chosen];
+  if(cursor===null) {
+    $('cursor-readout').textContent='Наведите на график, чтобы увидеть операции, CPU и ожидания в выбранной точке.';
+    return;
+  }
+  const active=Object.entries(run.stages.reduce((counts,[s,,a,b])=>{
+    if(a<=cursor&&b>=cursor)counts[s]=(counts[s]||0)+1;return counts;
+  },{})).map(([s,n])=>(stages[s]?.[0]||s)+(n>1?' ×'+n:'')).join(', ');
+  const cpu=chartData[0].map(([name,,p])=>name+' '+fmt(nearest(p.filter(([,v])=>Number.isFinite(v)),cursor)?.[1],2)).join(' · ');
+  const waits=Object.entries(nearest(run.samples.pg_activity,cursor)?.[1].waits||{}).map(([k,v])=>k+' '+v);
+  const ch=nearest(run.samples.ch_activity,cursor)?.[1];
+  const memory=chartData[1].map(([name,,p])=>name+' '+fmt(nearest(p,cursor)?.[1],1)).join(' · ');
+  $('cursor-readout').textContent=[fmt(cursor,3)+' с',active||'между отмеченными операциями',
+    'CPU (ядра): '+cpu,'RAM (МиБ): '+memory,
+    waits.length?'PG '+waits.join(', '):'', ch?'CH запросы '+ch.queries+' / merge '+ch.merges:''].filter(Boolean).join(' | ');
+}
+function draw() {
+  if(!runs.length)return;
+  drawTimeline();plots.forEach((canvas,i)=>drawPlot(canvas,chartData[i]));readout();
+}
+function setWindow(a,b) {
+  const max=runs[chosen].duration;
+  left=Math.max(0,a);right=Math.min(max,b);
+  if(right-left<0.001){left=0;right=max;}
+  $('left').value=left.toFixed(3);$('right').value=right.toFixed(3);
+  cursor=null;showResources();draw();
+}
+function counterAt(samples, key, t) {
+  const i=samples.findIndex(([time])=>time>=t);
+  if(i<0)return null;
+  const [end,b]=samples[i];
+  if(end===t)return b[key];
+  if(!i)return null;
+  const [start,a]=samples[i-1];
+  return Number.isFinite(a[key])&&Number.isFinite(b[key])&&b[key]>=a[key]
+    ? a[key]+(b[key]-a[key])*(t-start)/(end-start):null;
+}
+function showResources() {
+  const run=runs[chosen];
+  $('run-resources').replaceChildren();
+  const full=left===0&&right===run.duration;
+  for(const name of names) {
+    const tr=$('run-resources').insertRow(), samples=run.samples[name], summary=run.summary[name];
+    const delta=key=>{
+      if(full)return summary[key];
+      const a=counterAt(samples,key,left), b=counterAt(samples,key,right);
+      return Number.isFinite(a)&&Number.isFinite(b)&&b>=a?b-a:null;
+    };
+    const peak=key=>{
+      if(full)return summary[key];
+      const values=samples.filter(([t])=>t>=left&&t<=right).map(([,v])=>v[key]).filter(Number.isFinite);
+      return values.length?Math.max(...values):null;
+    };
+    const pair=(a,b)=>[a,b].map(k=>fmt(divide(delta(k),mib),1)).join(' / ');
+    const cpu=delta('cpu_s');
+    [services[name][0],fmt(cpu,2),full?fmt(divide(cpu,run.result.rows/1e6),2):'—',
+      fmt(divide(peak('memory'),mib),1),pair('read','write'),pair('rx','tx'),
+      fmt(delta('throttled_s'),3),fmt(peak('pids'))].forEach(v=>cell(tr,v));
+  }
+}
+function selectRun(index) {
+  chosen=index;$('run').value=index;
+  const run=runs[index];
+  chartData=spec.map(s=>series(run,s));
+  pids=[...new Set(run.stages.map(s=>s[1]))].sort((a,b)=>a-b);
+  timeline.style.height=Math.max(100,pids.length*26+33)+'px';
+  $('component-legend').replaceChildren(...legend([
+    ...Object.values(services), ...Object.values(stages).filter(([name])=>run.stages.some(([s])=>stages[s]?.[0]===name)),
+    ['CH merge','#ffbe72'],['PG ClientWrite','#ba9ff0'],
+  ]));
+  const error=Object.entries(run.errors).map(([k,v])=>k+' · '+v);
+  $('errors').textContent=error.length?'Ошибки сбора: '+error.join(', '):'';
+  $('phase-summary').replaceChildren();
+  const durations={};
+  for(const [s,,a,b] of run.stages) (durations[s]??=[]).push(b-a);
+  for(const [s,values] of Object.entries(durations)) {
+    values.sort((a,b)=>a-b);
+    const tr=$('phase-summary').insertRow();
+    [stages[s]?.[0]||s,fmt(values.length),fmt(sum(values),3),fmt(values[Math.ceil(values.length*.95)-1]*1000,2)].forEach(v=>cell(tr,v));
+  }
+  compare();if(!environment.fixed_sizes)compareSizes(run);setWindow(0,run.duration);
+}
+$('run').onchange=()=>selectRun(Number($('run').value));
+$('left').onchange=$('right').onchange=()=>setWindow(Number($('left').value),Number($('right').value));
+$('reset').onclick=()=>setWindow(0,runs[chosen].duration);
+for(const canvas of lines) {
+  function timeAt(event) {
+    const rect=canvas.getBoundingClientRect();
+    return left+Math.max(0,Math.min(1,(event.clientX-rect.left-70)/Math.max(1,rect.width-86)))*(right-left);
+  }
+  canvas.onpointermove=e=>{cursor=timeAt(e);draw();};
+  canvas.onpointerleave=()=>{if(drag===null){cursor=null;draw();}};
+  canvas.onpointerdown=e=>{if(e.pointerType==='mouse'){drag=timeAt(e);canvas.setPointerCapture(e.pointerId);}};
+  canvas.onpointerup=e=>{
+    if(drag===null)return;
+    const end=timeAt(e),start=drag;drag=null;
+    if(Math.abs(end-start)>(right-left)*.015)setWindow(Math.min(start,end),Math.max(start,end));else draw();
+  };
+  canvas.onpointercancel=()=>{drag=null;cursor=null;draw();};
+}
+window.addEventListener('resize',draw);
+if(runs.length) selectRun(runs.reduce((best,r,i)=>r.result.rows_per_second>runs[best].result.rows_per_second?i:best,0));
+else {$('trace').hidden=true;compare();}
+</script>
+</body></html>

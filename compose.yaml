@@ -1,0 +1,65 @@
+name: etl-benchmark
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: etl_source
+      POSTGRES_USER: etl
+      POSTGRES_PASSWORD: etl
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl -d etl_source"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    environment:
+      CLICKHOUSE_DB: etl_benchmark
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: etl
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user default --password etl --query 'SELECT 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  bench:
+    image: etl-benchmark:local
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      POSTGRES_DSN: postgresql://etl:etl@postgres:5432/etl_source
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-etl_public}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_DATABASE: etl_benchmark
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: etl
+      SOURCE_INFO_FILE: /state/source_info.json
+    volumes:
+      - ./data:/data:ro
+      - benchmark_state:/state
+      - ./results:/results
+  bench-profile:
+    extends: bench
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+  dashboard:
+    image: etl-benchmark:local
+    profiles: ["dashboard"]
+    entrypoint: ["python", "-m", "http.server", "8080", "--directory", "/results"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./results:/results:ro
+volumes:
+  postgres_data:
+  clickhouse_data:
+  benchmark_state:

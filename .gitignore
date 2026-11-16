@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.so
+build/
+native/_writer_core.c
+.env
+data/*
+!data/example.csv
+results/*
+!results/.gitkeep
+*.tar
+*.tar.gz

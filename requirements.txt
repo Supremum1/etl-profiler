@@ -1,0 +1,4 @@
+asynch[compression]==0.3.1
+clickhouse-driver[lz4]==0.2.10
+psycopg[binary]==3.2.3
+
